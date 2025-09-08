@@ -1,0 +1,86 @@
+# GitHub Copilot Custom Instructions for Databricks Data Engineer Professional Study Guide
+
+## Purpose
+This repository is dedicated to building a comprehensive study guide for the **Databricks Certified Data Engineer Professional** certification. The goal is to create structured, accurate, and exam-relevant content that helps learners prepare effectively.
+
+## Copilot Behavior Guidelines
+
+### ✅ Content Focus
+Copilot should prioritize generating content related to:
+- Apache Spark (core concepts, optimization, performance tuning)
+- Delta Lake (architecture, features, use cases)
+- Databricks SQL and Lakehouse architecture
+- Data ingestion, transformation, and orchestration
+- Streaming data pipelines (Structured Streaming, Auto Loader)
+- Data governance, security, and monitoring in Databricks
+- MLflow and machine learning pipeline integration
+- Best practices for scalable and reliable data engineering
+
+### 📚 Source Material
+
+Copilot should use the following as reference anchors:
+- The official Databricks exam guide (found in db_studyguide.md)
+- Sample questions provided by Databricks (found in db_studyguide.md)
+- Databricks documentation and blog posts
+- Apache Spark documentation
+
+### 🧠 Output Style
+Copilot should generate:
+- Concise explanations of key concepts
+- Annotated code examples in PySpark and SQL
+- Practice questions with answers and explanations
+- Summary tables and diagrams (in Markdown or Mermaid)
+- Tips and tricks for exam preparation
+
+### 🚫 Avoid
+- Overly verbose or generic content
+- Unverified or speculative information
+- Content unrelated to Databricks or Spark ecosystem
+
+## File Structure Suggestions
+Copilot can help maintain the following structure:
+
+/databricks-engineer-professional-study-guide/
+│
+├── README.md                        # Overview of the study guide, usage instructions, and resources
+├── custom-instructions.md          # GitHub Copilot guidance file
+│
+├── exam-guide/                     # Official exam guide and reference materials
+│   ├── databricks_exam_outline.md
+│   └── sample_questions.md
+│
+├── modules/                        # Core study modules aligned with exam domains
+│   ├── 01_spark_core.md            # Spark architecture, transformations, actions, caching
+│   ├── 02_delta_lake.md            # Delta Lake features, schema enforcement, time travel
+│   ├── 03_streaming.md             # Structured Streaming, Auto Loader, watermarking
+│   ├── 04_sql_lakehouse.md         # Databricks SQL, Lakehouse concepts, query optimization
+│   ├── 05_mlflow.md                # MLflow tracking, models, integration with pipelines
+│   ├── 06_governance_monitoring.md# Unity Catalog, data lineage, audit logging, alerting
+│   └── 07_pipeline_orchestration.md# Workflows, task dependencies, error handling
+│
+├── practice-questions/             # Practice sets with answers and explanations
+│   ├── set_01_foundations.md
+│   ├── set_02_intermediate.md
+│   └── set_03_advanced.md
+│
+├── cheatsheets/                    # Quick reference guides
+│   ├── spark_cheatsheet.md
+│   ├── delta_lake_cheatsheet.md
+│   └── streaming_cheatsheet.md
+│
+├── diagrams/                       # Mermaid or image-based diagrams
+│   ├── lakehouse_architecture.mmd
+│   ├── streaming_pipeline_flow.mmd
+│   └── governance_stack.mmd
+│
+└── resources/                      # External links, documentation, and blog references
+    ├── official_docs.md
+    └── recommended_reading.md
+
+## Tone & Audience
+The guide should be written in a professional but approachable tone, suitable for experienced data engineers preparing for certification.
+
+## Additional Notes
+- Use bullet points and headings for readability.
+- Include links to official documentation where relevant.
+- When generating code, include comments explaining each step.
