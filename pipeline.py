@@ -474,8 +474,118 @@ def test_is_previous_month_end_quarter_end():
     print("All tests passed.")
 
 
-if RUNT_TESTS:
+if RUN_TESTS:
     test_is_previous_month_end_quarter_end()   
+
+# COMMAND ----------
+
+def get_filtered_snapshots(snapshots_df, month_end=None):
+    """
+    Filters snapshots to include quarter-end snapshots and optionally a specific month-end.
+    
+    Args:
+        snapshots_df: DataFrame with snapshots
+        month_end: Optional specific month-end date to include (string format: 'YYYY-MM-DD')
+    
+    Returns:
+        Filtered DataFrame
+    """
+    result = snapshots_df.where('MONTH_END = QUARTER_END')
+    
+    if month_end:
+        result = result.unionAll(snapshots_df.where(f"MONTH_END = '{month_end}'"))
+    
+    return result
+
+
+def aggregate_financials_by_lob(snapshots_df, lob_filter, grpcols, month_end=None):
+    """
+    Aggregates financial data for a specific LOB (Line of Business).
+    
+    Args:
+        snapshots_df: Input DataFrame with snapshot data
+        lob_filter: SQL WHERE clause to filter LOB (e.g., 'LOB_SK = 1' or 'LOB_SK > 1')
+        grpcols: List of grouping columns (e.g., ['PRIMARY_CAUSE_OF_LOSS_SK', 'AOP_SK'])
+        month_end: Optional specific month-end date to include
+    
+    Returns:
+        Aggregated DataFrame with financial metrics
+    """
+    # Filter snapshots
+    filtered = get_filtered_snapshots(snapshots_df, month_end).where(lob_filter)
+    
+    mcols = ['QUARTER_END']
+    fincols = ['FIRM_PAID', 'PAID_LOSS', 'INCURRED_LOSS', 'GROUND_UP_PAID']
+    selcols = mcols + grpcols + fincols
+    ordercols = mcols + grpcols
+    
+    return (
+        filtered
+        .groupby(mcols + grpcols)
+        .agg(
+            F.sum('FIRM_PAID').alias('FIRM_PAID'),
+            F.sum('ALAS_PAID').alias('PAID_LOSS'),
+            F.sum('TOTAL_INCURRED').alias('INCURRED_LOSS'),
+            F.sum('GROUND_UP_PAID').alias('GROUND_UP_PAID'),
+        )
+        .select(selcols)
+        .orderBy(ordercols)
+    )
+
+
+def calculate_mom_financials(agg_df, grpcols):
+    """
+    Calculates month-over-month changes for financial metrics.
+    
+    Args:
+        agg_df: Aggregated financial DataFrame
+        grpcols: List of grouping columns
+    
+    Returns:
+        DataFrame with month-over-month changes
+    """
+    mcols = ['QUARTER_END']
+    aggcols = ['FIRM_PAID', 'PAID_LOSS', 'INCURRED_LOSS', 'GROUND_UP_PAID']
+    
+    # Calculate MOM changes
+    momdf = mom_change(agg_df.drop('CL01_COUNT') if 'CL01_COUNT' in agg_df.columns else agg_df, 
+                       mcols, grpcols, aggcols)
+    
+    # Join back with original to preserve other columns
+    return (
+        momdf
+        .join(agg_df.select(*mcols, *grpcols), on=mcols + grpcols, how='left')
+        .orderBy(mcols + grpcols)
+    )
+
+
+def calculate_cl01_count(snapshots_df, lob_filter, grpcols):
+    """
+    Calculates CL01 (open claims) count for a specific LOB.
+    
+    Args:
+        snapshots_df: Input DataFrame with snapshot data
+        lob_filter: SQL WHERE clause to filter LOB
+        grpcols: List of grouping columns
+    
+    Returns:
+        DataFrame with CL01 counts
+    """
+    df = snapshots_df.where(lob_filter)
+    mcols = ['MONTH_END']
+    
+    return (
+        df
+        .groupby(mcols + grpcols)
+        .agg(
+            F.sum(
+                F.when(
+                    (F.col('MATTER_CATEGORY_SK') == 2) & (F.col('MATTER_STATUS_CODE') == 'Open'), 
+                    1
+                ).otherwise(0)
+            ).alias('CL01_COUNT')
+        )
+    )
 
 # COMMAND ----------
 
@@ -566,33 +676,12 @@ def msnapshots_bronze_cl01():
 @dlt.table
 @dlt.expect_or_fail('no null dates', 'QUARTER_END IS NOT NULL')
 def silver_financials_agg_lpl():
-    # step one: aggregate financials at quarterly level
-
-    # combine the quarterly snapshots with the most recent month if not end-of-quarter
-    snapshots = dlt.read('msnapshots_bronze_cl01').where('MONTH_END = QUARTER_END')
-
-    if MONTH_END:
-        snapshots = snapshots.unionAll(dlt.read('msnapshots_bronze_cl01').where(f"MONTH_END = '{MONTH_END}'"))
-
-    snapshots = snapshots.where('LOB_SK = 1')
-
-    mcols = ['QUARTER_END']
+    """Aggregate LPL financials at quarterly level"""
+    snapshots = dlt.read('msnapshots_bronze_cl01')
     grpcols = ['PRIMARY_CAUSE_OF_LOSS_SK', 'AOP_SK']
-    fincols = ['FIRM_PAID', 'PAID_LOSS', 'INCURRED_LOSS', 'GROUND_UP_PAID']
-    selcols = mcols + grpcols + fincols
-    ordercols = mcols + grpcols
-
+    
     return (
-        snapshots
-        .groupby(mcols + grpcols)
-        .agg(
-            F.sum('FIRM_PAID').alias('FIRM_PAID'),
-            (F.sum('ALAS_PAID')).alias('PAID_LOSS'),
-            (F.sum('TOTAL_INCURRED')).alias('INCURRED_LOSS'),
-            (F.sum('GROUND_UP_PAID')).alias('GROUND_UP_PAID'),
-        )
-        .select(selcols)
-        .orderBy(ordercols)
+        aggregate_financials_by_lob(snapshots, 'LOB_SK = 1', grpcols, MONTH_END)
         .withColumn('LOB_SK', F.lit(1))
         .withColumn('CLAIMANT_TYPE_SK', F.lit(-2))
     )
@@ -601,32 +690,12 @@ def silver_financials_agg_lpl():
 @dlt.table
 @dlt.expect_or_fail('no null dates', 'QUARTER_END IS NOT NULL')
 def silver_financials_agg_supp():
-    # step one: aggregate financials at quarterly level
-    # combine the quarterly snapshots with the most recent month if not end-of-quarter
-    snapshots = dlt.read('msnapshots_bronze_cl01').where('MONTH_END = QUARTER_END')
-
-    if MONTH_END:
-        snapshots = snapshots.unionAll(dlt.read('msnapshots_bronze_cl01').where(f"MONTH_END = '{MONTH_END}'"))
-
-    snapshots = snapshots.where('LOB_SK > 1')
-
-    mcols = ['QUARTER_END']
+    """Aggregate supplemental financials at quarterly level"""
+    snapshots = dlt.read('msnapshots_bronze_cl01')
     grpcols = ['PRIMARY_CAUSE_OF_LOSS_SK', 'CLAIMANT_TYPE_SK']
-    fincols = ['FIRM_PAID', 'PAID_LOSS', 'INCURRED_LOSS', 'GROUND_UP_PAID']
-    selcols = mcols + grpcols + fincols
-    ordercols = mcols + grpcols
-
+    
     return (
-        snapshots
-        .groupby(mcols + grpcols)
-        .agg(
-            F.sum('FIRM_PAID').alias('FIRM_PAID'),
-            (F.sum('ALAS_PAID')).alias('PAID_LOSS'),
-            (F.sum('TOTAL_INCURRED')).alias('INCURRED_LOSS'),
-            (F.sum('GROUND_UP_PAID')).alias('GROUND_UP_PAID'),
-        )
-        .select(selcols)
-        .orderBy(ordercols)
+        aggregate_financials_by_lob(snapshots, 'LOB_SK > 1', grpcols, MONTH_END)
         .withColumn('LOB_SK', F.lit(4))
         .withColumn('AOP_SK', F.lit(-2))
     )
@@ -640,22 +709,12 @@ def silver_financials_agg_supp():
 @dlt.table
 @dlt.expect_or_fail('no null dates', 'QUARTER_END IS NOT NULL')
 def silver_financials_mom_lpl():
-    """Calculates the monthly LPL loss emergence as period n+1 totals - period n totals
-       Mom function excludes CL01 count as those are not cumulative
-       Instead can just join from the aggregate table
-    """
-    # calculate the monthly value by subtracting snapshots
-    mcols = ['QUARTER_END']
-    grpcols = ['PRIMARY_CAUSE_OF_LOSS_SK', 'AOP_SK']
-    aggcols = ['FIRM_PAID', 'PAID_LOSS', 'INCURRED_LOSS', 'GROUND_UP_PAID']
+    """Calculates the monthly LPL loss emergence as period n+1 totals - period n totals"""
     tbl = dlt.read('silver_financials_agg_lpl')
-    momdf = mom_change(tbl.drop('CL01_COUNT'), mcols, grpcols, aggcols)
-
-    # now return combined dataframe
+    grpcols = ['PRIMARY_CAUSE_OF_LOSS_SK', 'AOP_SK']
+    
     return (
-        momdf
-        .join(tbl.select(*mcols, *grpcols), on=mcols+grpcols, how='left')
-        .orderBy(mcols + grpcols)
+        calculate_mom_financials(tbl, grpcols)
         .withColumn('LOB_SK', F.lit(1))
         .withColumn('CLAIMANT_TYPE_SK', F.lit(-2))
     )
@@ -664,21 +723,12 @@ def silver_financials_mom_lpl():
 @dlt.table
 @dlt.expect_or_fail('no null dates', 'QUARTER_END IS NOT NULL')
 def silver_financials_mom_supp():
-    """Calculates the monthly supplemental loss emergence as period n+1 totals - period n totals
-       Mom function excludes CL01 count as those are not cumulative
-       Instead can just join from the aggregate table
-    """
-    mcols = ['QUARTER_END']
+    """Calculates the monthly supplemental loss emergence as period n+1 totals - period n totals"""
+    tbl = dlt.read('silver_financials_agg_supp')
     grpcols = ['PRIMARY_CAUSE_OF_LOSS_SK', 'CLAIMANT_TYPE_SK']
-    aggcols = ['FIRM_PAID', 'PAID_LOSS', 'INCURRED_LOSS', 'GROUND_UP_PAID']
-    tbl = dlt.read(f'silver_financials_agg_supp')
-    momdf = mom_change(tbl, mcols, grpcols, aggcols)
-
-    # now return combined dataframe
+    
     return (
-        momdf
-        .join(tbl.select(*mcols, *grpcols), on=mcols+grpcols, how='left')
-        .orderBy(mcols + grpcols)
+        calculate_mom_financials(tbl, grpcols)
         .withColumn('LOB_SK', F.lit(4))
         .withColumn('AOP_SK', F.lit(-2))
     )
@@ -703,16 +753,13 @@ def silver_financials_mom_supp():
 @dlt.table
 def silver_cl01_lpl():
     """Creates silver CL01 count table for LPL"""
-    df = dlt.read('msnapshots_bronze_cl01').where('LOB_SK = 1')
-    mcols = ['MONTH_END']
+    snapshots = dlt.read('msnapshots_bronze_cl01')
     grpcols = ['LOB_SK', 'PRIMARY_CAUSE_OF_LOSS_SK', 'AOP_SK']
+    
     return (
-      df
-      .groupby(mcols + grpcols)
-      .agg(F.sum(F.when((F.col('MATTER_CATEGORY_SK') == 2) & (F.col('MATTER_STATUS_CODE') == 'Open'), 1)
-	  .otherwise(0)).alias('CL01_COUNT'))
-      .withColumn('LOB_SK', F.lit(1))
-      .withColumn('CLAIMANT_TYPE_SK', F.lit(-2))
+        calculate_cl01_count(snapshots, 'LOB_SK = 1', grpcols)
+        .withColumn('LOB_SK', F.lit(1))
+        .withColumn('CLAIMANT_TYPE_SK', F.lit(-2))
     )
 
 # COMMAND ----------
@@ -720,16 +767,13 @@ def silver_cl01_lpl():
 @dlt.table
 def silver_cl01_supp():
     """Creates silver CL01 count table for supplemental"""
-    df = dlt.read('msnapshots_bronze_cl01').where('LOB_SK > 1')
-    mcols = ['MONTH_END']
+    snapshots = dlt.read('msnapshots_bronze_cl01')
     grpcols = ['PRIMARY_CAUSE_OF_LOSS_SK', 'CLAIMANT_TYPE_SK']
+    
     return (
-      df
-      .groupby(mcols + grpcols)
-      .agg(F.sum(F.when((F.col('MATTER_CATEGORY_SK') == 2) & (F.col('MATTER_STATUS_CODE') == 'Open'), 1)
-	  .otherwise(0)).alias('CL01_COUNT'))
-      .withColumn('LOB_SK', F.lit(4))
-      .withColumn('AOP_SK', F.lit(-2))
+        calculate_cl01_count(snapshots, 'LOB_SK > 1', grpcols)
+        .withColumn('LOB_SK', F.lit(4))
+        .withColumn('AOP_SK', F.lit(-2))
     )
 
 # COMMAND ----------

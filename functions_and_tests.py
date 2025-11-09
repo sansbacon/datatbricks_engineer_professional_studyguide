@@ -402,6 +402,120 @@ def test_is_previous_month_end_quarter_end():
 
 # COMMAND ----------
 
+# MAGIC %md ### Helper Functions for DLT Pipeline
+
+# COMMAND ----------
+
+def get_filtered_snapshots(snapshots_df, month_end=None):
+    """
+    Filters snapshots to include quarter-end snapshots and optionally a specific month-end.
+    
+    Args:
+        snapshots_df: DataFrame with snapshots
+        month_end: Optional specific month-end date to include (string format: 'YYYY-MM-DD')
+    
+    Returns:
+        Filtered DataFrame
+    """
+    result = snapshots_df.where('MONTH_END = QUARTER_END')
+    
+    if month_end:
+        result = result.unionAll(snapshots_df.where(f"MONTH_END = '{month_end}'"))
+    
+    return result
+
+
+def aggregate_financials_by_lob(snapshots_df, lob_filter, grpcols, month_end=None):
+    """
+    Aggregates financial data for a specific LOB (Line of Business).
+    
+    Args:
+        snapshots_df: Input DataFrame with snapshot data
+        lob_filter: SQL WHERE clause to filter LOB (e.g., 'LOB_SK = 1' or 'LOB_SK > 1')
+        grpcols: List of grouping columns (e.g., ['PRIMARY_CAUSE_OF_LOSS_SK', 'AOP_SK'])
+        month_end: Optional specific month-end date to include
+    
+    Returns:
+        Aggregated DataFrame with financial metrics
+    """
+    # Filter snapshots
+    filtered = get_filtered_snapshots(snapshots_df, month_end).where(lob_filter)
+    
+    mcols = ['QUARTER_END']
+    fincols = ['FIRM_PAID', 'PAID_LOSS', 'INCURRED_LOSS', 'GROUND_UP_PAID']
+    selcols = mcols + grpcols + fincols
+    ordercols = mcols + grpcols
+    
+    return (
+        filtered
+        .groupby(mcols + grpcols)
+        .agg(
+            F.sum('FIRM_PAID').alias('FIRM_PAID'),
+            F.sum('ALAS_PAID').alias('PAID_LOSS'),
+            F.sum('TOTAL_INCURRED').alias('INCURRED_LOSS'),
+            F.sum('GROUND_UP_PAID').alias('GROUND_UP_PAID'),
+        )
+        .select(selcols)
+        .orderBy(ordercols)
+    )
+
+
+def calculate_mom_financials(agg_df, grpcols):
+    """
+    Calculates month-over-month changes for financial metrics.
+    
+    Args:
+        agg_df: Aggregated financial DataFrame
+        grpcols: List of grouping columns
+    
+    Returns:
+        DataFrame with month-over-month changes
+    """
+    mcols = ['QUARTER_END']
+    aggcols = ['FIRM_PAID', 'PAID_LOSS', 'INCURRED_LOSS', 'GROUND_UP_PAID']
+    
+    # Calculate MOM changes
+    momdf = mom_change(agg_df.drop('CL01_COUNT') if 'CL01_COUNT' in agg_df.columns else agg_df, 
+                       mcols, grpcols, aggcols)
+    
+    # Join back with original to preserve other columns
+    return (
+        momdf
+        .join(agg_df.select(*mcols, *grpcols), on=mcols + grpcols, how='left')
+        .orderBy(mcols + grpcols)
+    )
+
+
+def calculate_cl01_count(snapshots_df, lob_filter, grpcols):
+    """
+    Calculates CL01 (open claims) count for a specific LOB.
+    
+    Args:
+        snapshots_df: Input DataFrame with snapshot data
+        lob_filter: SQL WHERE clause to filter LOB
+        grpcols: List of grouping columns
+    
+    Returns:
+        DataFrame with CL01 counts
+    """
+    df = snapshots_df.where(lob_filter)
+    mcols = ['MONTH_END']
+    
+    return (
+        df
+        .groupby(mcols + grpcols)
+        .agg(
+            F.sum(
+                F.when(
+                    (F.col('MATTER_CATEGORY_SK') == 2) & (F.col('MATTER_STATUS_CODE') == 'Open'), 
+                    1
+                ).otherwise(0)
+            ).alias('CL01_COUNT')
+        )
+    )
+
+# COMMAND ----------
+
 # MAGIC %md ## Run All Tests
 
 # COMMAND ----------
